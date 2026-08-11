@@ -13,6 +13,7 @@ bool is_public_recovery_flag(const char* arg) {
     return std::strcmp(arg, "-recovery") == 0 ||
         std::strcmp(arg, "-i") == 0 ||
         std::strcmp(arg, "-wordlist") == 0 ||
+        std::strcmp(arg, "-nvalid") == 0 ||
         std::strcmp(arg, "-d") == 0 ||
         std::strcmp(arg, "-d_type") == 0 ||
         std::strcmp(arg, "-c") == 0 ||
@@ -66,7 +67,10 @@ void printHelp() {
         << "Recovery sources:\n"
         << "  -recovery \"...\"     Add one recovery template inline. Repeatable.\n"
         << "  -recovery -i FILE    Load recovery templates from file, processed line by line. Repeatable.\n"
-        << "  -wordlist FILE       Use an external 2048-word BIP39 wordlist override.\n"
+        << "  -wordlist FILE       Use 1..65535 words as wildcard candidates.\n"
+        << "                       Non-2048 custom lists enable -nvalid automatically;\n"
+        << "                       an unambiguous BIP39 subset keeps checksum filtering.\n"
+        << "  -nvalid              Include checksum-invalid mnemonic combinations.\n"
         << "  -d FILE              Derivation file. Required.\n\n"
         << "Target selection:\n"
         << "  -c TYPES             Target families. Default: cus\n"

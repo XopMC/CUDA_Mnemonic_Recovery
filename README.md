@@ -153,7 +153,7 @@ The Windows archive contains these build profiles:
 | `sm_120` | RTX 50xx / Blackwell | Dedicated Blackwell Windows build |
 | `universal-sm_86-sm_120` | RTX 30xx / 40xx / 50xx | One Windows binary for modern cards from `sm_86` through `sm_120` |
 
-Release bundles are built with CUDA `12.8`. Pick a dedicated build when you want the best match for one GPU generation, or choose `universal-sm_86-sm_120` when you want one binary for RTX `30xx` through `50xx`. RTX `20xx` remains on the dedicated `sm_75` build.
+Release assets are built with CUDA `12.8` and published as separate archives for every OS/SM profile, plus `SHA256SUMS.txt`. Pick a dedicated build when you want the best match for one GPU generation, or choose `universal-sm_86-sm_120` when you want one binary for RTX `30xx` through `50xx`. RTX `20xx` remains on the dedicated `sm_75` build.
 
 The packaged binaries are intended to be easy to move between machines. A compatible NVIDIA driver is still required on the target machine.
 
@@ -265,8 +265,11 @@ wallet-passphrase-example
 | --- | --- | --- |
 | `-recovery "..."` | Add one template inline | Repeatable |
 | `-recovery -i FILE` | Load templates from file | Repeatable; processed line by line in streaming mode |
-| `-wordlist FILE` | Override embedded BIP39 wordlist | Must still be a valid 2048-word BIP39 list |
+| `-wordlist FILE` | Restrict wildcard candidates to words from a file | Accepts 1..65,535 unique words |
+| `-nvalid` | Include checksum-invalid combinations | Explicitly disables BIP39 checksum filtering |
 | `-d FILE` | Load derivation paths from file | Required |
+
+An external list with exactly 2048 words keeps the traditional ordered BIP39 checksum behavior. For any other size, the tool checks whether every word belongs to exactly one embedded BIP39 dictionary. An unambiguous standard subset keeps checksum filtering and maps each file entry to its canonical BIP39 ID; custom, mixed-language, or ambiguous lists enable `-nvalid` automatically. Explicit `-nvalid` always takes priority. Empty lists, duplicates, words longer than 33 bytes, and lists above 65,535 words are rejected.
 
 ### Targets and derivation routing
 
@@ -661,7 +664,7 @@ GitHub Actions подготавливает два дистрибутивных 
 | `sm_120` | RTX 50xx / Blackwell | Отдельная Windows-сборка под Blackwell |
 | `universal-sm_86-sm_120` | RTX 30xx / 40xx / 50xx | Один Windows-бинарник для `sm_86`...`sm_120` |
 
-Release-сборки делаются на CUDA `12.8`. Если нужен максимально подходящий вариант под одно поколение GPU, берите dedicated-профиль. Если нужен один бинарник для современных карт, выбирайте `universal-sm_86-sm_120` для RTX `30xx`...`50xx`. Для RTX `20xx` остаётся отдельный профиль `sm_75`.
+Release-сборки делаются на CUDA `12.8` и публикуются отдельными архивами для каждого OS/SM-профиля вместе с `SHA256SUMS.txt`. Если нужен максимально подходящий вариант под одно поколение GPU, берите dedicated-профиль. Если нужен один бинарник для современных карт, выбирайте `universal-sm_86-sm_120` для RTX `30xx`...`50xx`. Для RTX `20xx` остаётся отдельный профиль `sm_75`.
 
 Пакеты подготовлены так, чтобы их было удобно переносить между машинами. Совместимый NVIDIA driver на целевой машине всё равно обязателен.
 
@@ -773,8 +776,11 @@ wallet-passphrase-example
 | --- | --- | --- |
 | `-recovery "..."` | Добавляет один шаблон прямо из CLI | Можно повторять |
 | `-recovery -i FILE` | Загружает шаблоны из файла | Можно повторять; строки обрабатываются последовательно в streaming-режиме |
-| `-wordlist FILE` | Подменяет встроенный словарь BIP39 | Должен быть корректный 2048-word BIP39 список |
+| `-wordlist FILE` | Ограничивает wildcard-кандидаты словами из файла | От 1 до 65 535 уникальных слов |
+| `-nvalid` | Учитывает комбинации с невалидным checksum | Явно отключает BIP39 checksum-фильтрацию |
 | `-d FILE` | Загружает derivation-path’ы | Обязательный аргумент |
+
+Внешний список ровно из 2048 слов сохраняет прежнюю ordered-BIP39 семантику checksum. Для другого размера программа проверяет, входят ли все слова ровно в один встроенный BIP39-словарь. Однозначное стандартное подмножество сохраняет checksum-фильтрацию и использует канонические BIP39 ID; кастомный, смешанный или неоднозначный список автоматически включает `-nvalid`. Явный `-nvalid` всегда имеет приоритет. Пустые списки, дубликаты, слова длиннее 33 байт и списки более 65 535 слов отклоняются.
 
 ### Цели и тип derivation
 

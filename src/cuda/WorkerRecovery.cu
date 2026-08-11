@@ -132,6 +132,9 @@ __global__ void workerRecoveryChecksumFixed(
     const uint16_t* base_ids,
     const int* missing_positions,
     int missing_count,
+    const uint16_t* word_options,
+    uint32_t word_options_count,
+    bool include_invalid,
     uint64_t range_start,
     uint64_t range_count,
     uint16_t* out_ids,
@@ -157,11 +160,19 @@ __global__ void workerRecoveryChecksumFixed(
 
         for (int j = 0; j < missing_count; ++j) {
             const int pos = missing_pos_local[j];
-            ids[pos] = static_cast<uint16_t>(combo & 0x7FFull);
-            combo >>= 11;
+            uint32_t option = 0u;
+            if (word_options == nullptr && word_options_count == 2048u) {
+                option = static_cast<uint32_t>(combo & 0x7FFull);
+                combo >>= 11;
+            }
+            else {
+                option = static_cast<uint32_t>(combo % static_cast<uint64_t>(word_options_count));
+                combo /= static_cast<uint64_t>(word_options_count);
+            }
+            ids[pos] = (word_options == nullptr) ? static_cast<uint16_t>(option) : word_options[option];
         }
 
-        if (!recovery_checksum_valid_ids_fixed<WORDS_COUNT>(ids)) {
+        if (!include_invalid && !recovery_checksum_valid_ids_fixed<WORDS_COUNT>(ids)) {
             continue;
         }
 
@@ -182,6 +193,9 @@ __global__ void workerRecoveryChecksum(
     int words_count,
     const int* missing_positions,
     int missing_count,
+    const uint16_t* word_options,
+    uint32_t word_options_count,
+    bool include_invalid,
     uint64_t range_start,
     uint64_t range_count,
     uint16_t* out_ids,
@@ -206,11 +220,19 @@ __global__ void workerRecoveryChecksum(
 
         for (int j = 0; j < missing_count; ++j) {
             const int pos = missing_pos_local[j];
-            ids[pos] = static_cast<uint16_t>(combo & 0x7FFull);
-            combo >>= 11;
+            uint32_t option = 0u;
+            if (word_options == nullptr && word_options_count == 2048u) {
+                option = static_cast<uint32_t>(combo & 0x7FFull);
+                combo >>= 11;
+            }
+            else {
+                option = static_cast<uint32_t>(combo % static_cast<uint64_t>(word_options_count));
+                combo /= static_cast<uint64_t>(word_options_count);
+            }
+            ids[pos] = (word_options == nullptr) ? static_cast<uint16_t>(option) : word_options[option];
         }
 
-        if (!recovery_checksum_valid_ids_dyn(ids, words_count)) {
+        if (!include_invalid && !recovery_checksum_valid_ids_dyn(ids, words_count)) {
             continue;
         }
 
@@ -240,7 +262,7 @@ static __device__ __forceinline__ uint32_t recovery_build_phrase_from_ids(
     const uint32_t limit = out_capacity - 1u;
 
     for (int i = 0; i < words_count; ++i) {
-        const uint16_t id = ids[i] & 0x7FFu;
+        const uint16_t id = ids[i];
         const char* word = dict[id];
         for (int j = 0; j < 33; ++j) {
             const char c = word[j];
@@ -686,6 +708,9 @@ cudaError_t launchWorkerRecoveryChecksum(
     int words_count,
     const int* d_missing_positions,
     int missing_count,
+    const uint16_t* d_word_options,
+    uint32_t word_options_count,
+    bool include_invalid,
     uint64_t range_start,
     uint64_t range_count,
     uint16_t* d_out_ids,
@@ -709,6 +734,9 @@ cudaError_t launchWorkerRecoveryChecksum(
     if (missing_count > 0 && d_missing_positions == nullptr) {
         return cudaErrorInvalidValue;
     }
+    if (word_options_count == 0u || word_options_count > 65535u) {
+        return cudaErrorInvalidValue;
+    }
     if (out_capacity == 0u) {
         return cudaErrorInvalidValue;
     }
@@ -726,6 +754,9 @@ cudaError_t launchWorkerRecoveryChecksum(
             d_base_ids,
             d_missing_positions,
             missing_count,
+            d_word_options,
+            word_options_count,
+            include_invalid,
             range_start,
             range_count,
             d_out_ids,
@@ -737,6 +768,9 @@ cudaError_t launchWorkerRecoveryChecksum(
             d_base_ids,
             d_missing_positions,
             missing_count,
+            d_word_options,
+            word_options_count,
+            include_invalid,
             range_start,
             range_count,
             d_out_ids,
@@ -749,6 +783,9 @@ cudaError_t launchWorkerRecoveryChecksum(
             words_count,
             d_missing_positions,
             missing_count,
+            d_word_options,
+            word_options_count,
+            include_invalid,
             range_start,
             range_count,
             d_out_ids,

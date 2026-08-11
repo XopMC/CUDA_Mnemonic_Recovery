@@ -37,6 +37,7 @@ $templateTypo = "examples/validation/template-typo.txt"
 $derivationsDefault = "examples/derivations/default.txt"
 $derivationsSecp = "examples/validation/derivations-secp.txt"
 $derivationsSolana = "examples/validation/derivations-solana.txt"
+$wordlistEnglish = "assets/wordlists/bip39-en.txt"
 
 $ValidationOutDir = Join-Path $RepoRoot "out\validation-run"
 New-Item -ItemType Directory -Force -Path $ValidationOutDir | Out-Null
@@ -89,7 +90,47 @@ function Get-FoundCount {
 
 Push-Location $RepoRoot
 try {
-    Invoke-Case -Name "help" -ArgumentList @("-help") -Patterns @("-d_type 1\|2\|3\|4")
+    Invoke-Case -Name "help" -ArgumentList @("-help") -Patterns @("-d_type 1\|2\|3\|4", "-nvalid")
+
+    $wordlistEn128 = Join-Path $ValidationOutDir "wordlist-en-128.txt"
+    $wordlistCustom3 = Join-Path $ValidationOutDir "wordlist-custom-3.txt"
+    $wordlistMixed3 = Join-Path $ValidationOutDir "wordlist-mixed-3.txt"
+    $wordlistCustom2049 = Join-Path $ValidationOutDir "wordlist-custom-2049.txt"
+    Get-Content $wordlistEnglish | Select-Object -First 128 | Set-Content $wordlistEn128 -Encoding UTF8
+    @("alpha", "custombeta", "customgamma") | Set-Content $wordlistCustom3 -Encoding UTF8
+    @("abandon", "ability", "customword") | Set-Content $wordlistMixed3 -Encoding UTF8
+    0..2048 | ForEach-Object { "customword{0:D4}" -f $_ } | Set-Content $wordlistCustom2049 -Encoding UTF8
+
+    Invoke-Case -Name "standard subset checksum" -ArgumentList @(
+        "-device", $Device, "-recovery", $phraseOneMissing,
+        "-wordlist", $wordlistEn128, "-d", $derivationsDefault,
+        "-c", "c", "-hash", $hashCompressed, "-pbkdf", "1", "-silent"
+    ) -Patterns @("recognized as an unambiguous BIP39 subset", "tested=128 checksum-valid=8")
+
+    $customPhrase = "alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha *"
+    Invoke-Case -Name "custom wordlist auto nvalid" -ArgumentList @(
+        "-device", $Device, "-recovery", $customPhrase,
+        "-wordlist", $wordlistCustom3, "-d", $derivationsDefault,
+        "-c", "c", "-hash", $hashCompressed, "-pbkdf", "1", "-silent"
+    ) -Patterns @("enabling -nvalid automatically", "tested=3 checksum-valid=3")
+
+    Invoke-Case -Name "mixed wordlist auto nvalid" -ArgumentList @(
+        "-device", $Device, "-recovery", "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon *",
+        "-wordlist", $wordlistMixed3, "-d", $derivationsDefault,
+        "-c", "c", "-hash", $hashCompressed, "-pbkdf", "1", "-silent"
+    ) -Patterns @("enabling -nvalid automatically", "tested=3 checksum-valid=3")
+
+    Invoke-Case -Name "explicit nvalid" -ArgumentList @(
+        "-device", $Device, "-recovery", $phraseOneMissing,
+        "-wordlist", $wordlistEnglish, "-nvalid", "-d", $derivationsDefault,
+        "-c", "c", "-hash", $hashCompressed, "-pbkdf", "1", "-silent"
+    ) -Patterns @("tested=2048 checksum-valid=2048")
+
+    Invoke-Case -Name "custom wordlist above 2048" -ArgumentList @(
+        "-device", $Device, "-recovery", "customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 *",
+        "-wordlist", $wordlistCustom2049, "-d", $derivationsDefault,
+        "-c", "c", "-hash", $hashCompressed, "-pbkdf", "1", "-silent"
+    ) -Patterns @("options=2049", "tested=2049 checksum-valid=2049")
 
     Invoke-Case -Name "inline exact hash" -ArgumentList @(
         "-device", $Device,

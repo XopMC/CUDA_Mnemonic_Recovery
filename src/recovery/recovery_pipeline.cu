@@ -192,8 +192,12 @@ struct RecoveryWordlist {
     std::vector<std::string> words;
     std::vector<std::string> words_norm;
     std::unordered_map<std::string, int> id_by_norm;
+    std::vector<uint16_t> word_options;
+    size_t source_word_count = 0u;
     int device_lang = -1;
     bool external = false;
+    bool standard_subset = false;
+    bool auto_nvalid = false;
 };
 
 struct RecoveryTemplateInput {
@@ -208,6 +212,9 @@ struct RecoveryPreparedTask {
     const RecoveryWordlist* wordlist = nullptr;
     std::vector<int> ids;
     std::vector<int> missing_positions;
+    size_t word_options_count = 0u;
+    bool wordlist_source_is_standard_subset = false;
+    bool effective_nvalid = false;
     std::string normalized_phrase;
     size_t added_stars = 0;
     std::vector<std::pair<std::string, std::string>> replacements;
@@ -226,6 +233,7 @@ struct RecoverySourceStats {
 bool RECOVERY_MODE = false;
 std::vector<RecoveryQueueEntry> recoveryQueue;
 std::string recoveryForcedWordlist;
+bool recoveryIncludeInvalid = false;
 
 struct RecoveryMultiGpuPartition {
     bool enabled = false;
@@ -1712,6 +1720,7 @@ static bool recovery_add_embedded_wordlist(const RecoveryEmbeddedWordlistView& v
         err = "embedded wordlist is empty: " + out.file_name;
         return false;
     }
+    out.source_word_count = out.words.size();
     return true;
 }
 
@@ -1775,6 +1784,16 @@ static bool recovery_add_file_wordlist(const std::string& path, RecoveryWordlist
             return false;
         }
 
+        if (line.size() > 33u) {
+            err = "invalid external wordlist line (more than 33 bytes) at line " + std::to_string(line_no);
+            return false;
+        }
+
+        if (out.words.size() >= static_cast<size_t>(std::numeric_limits<uint16_t>::max())) {
+            err = "external wordlist must contain no more than 65535 words";
+            return false;
+        }
+
         const int idx = static_cast<int>(out.words.size());
         out.words.emplace_back(line);
         const std::string norm = recovery_norm_token(out.words.back());
@@ -1791,11 +1810,7 @@ static bool recovery_add_file_wordlist(const std::string& path, RecoveryWordlist
         return false;
     }
 
-    if (out.words.size() != 2048u) {
-        err = "external wordlist must contain exactly 2048 words for BIP39 checksum mode";
-        return false;
-    }
-
+    out.source_word_count = out.words.size();
     return true;
 }
 
@@ -1920,6 +1935,9 @@ static bool recovery_prepare_task(
     out.source = in.source;
     out.line_no = in.line_no;
     out.wordlist = wl;
+    out.word_options_count = wl->word_options.empty() ? wl->words.size() : wl->word_options.size();
+    out.wordlist_source_is_standard_subset = wl->standard_subset;
+    out.effective_nvalid = recoveryIncludeInvalid || wl->auto_nvalid;
     out.added_stars = added_stars;
     out.ids.assign(tokens.size(), -1);
 
@@ -2217,7 +2235,7 @@ static bool recovery_direct_append_candidate_i32(
     std::vector<uint16_t> ids_u16(ids.size(), 0u);
     for (size_t i = 0; i < ids.size(); ++i) {
         const int id = ids[i];
-        if (id < 0 || id >= 2048) {
+        if (id < 0 || static_cast<size_t>(id) >= task.wordlist->words.size() || id > static_cast<int>(std::numeric_limits<uint16_t>::max())) {
             err = "recovery candidate has invalid CPU word id";
             return false;
         }
@@ -2404,14 +2422,39 @@ static bool recovery_direct_finalize(RecoveryGpuDirectContext& ctx, std::string&
     return true;
 }
 
-// recovery_pow_2048_u64: recovery mode helper that computes 2048 u64.
-static bool recovery_pow_2048_u64(int missing_count, uint64_t& out) {
-    out = 0ull;
-    if (missing_count < 0 || missing_count > 5) {
+// recovery_pow_u64: recovery mode helper that computes a checked integer power.
+static bool recovery_pow_u64(const uint32_t base, const int exponent, uint64_t& out) {
+    out = 1ull;
+    if (base == 0u || exponent < 0) {
         return false;
     }
-    out = 1ull << (11 * missing_count);
+    for (int i = 0; i < exponent; ++i) {
+        if (out > (std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(base))) {
+            return false;
+        }
+        out *= static_cast<uint64_t>(base);
+    }
     return true;
+}
+
+// recovery_pick_low_missing_count: keeps the GPU linear range representable by uint64_t.
+static int recovery_pick_low_missing_count(const int missing_count, const uint32_t word_options_count, uint64_t& low_space_candidates) {
+    int low_missing_count = (missing_count > 5) ? 5 : missing_count;
+    while (low_missing_count > 0 && !recovery_pow_u64(word_options_count, low_missing_count, low_space_candidates)) {
+        --low_missing_count;
+    }
+    if (low_missing_count == 0) {
+        low_space_candidates = 1ull;
+    }
+    return low_missing_count;
+}
+
+// recovery_word_option_id: maps a local wildcard option to the active dictionary ID.
+static uint16_t recovery_word_option_id(const RecoveryPreparedTask& task, const size_t option) {
+    if (task.wordlist->word_options.empty()) {
+        return static_cast<uint16_t>(option);
+    }
+    return task.wordlist->word_options[option];
 }
 
 // recovery_u64_add_saturating: recovery mode helper that adds saturating for u64.
@@ -2606,7 +2649,7 @@ static bool recovery_emit_task_candidates_cpu(RecoveryGpuDirectContext& ctx, con
             return true;
         }
         tested = 1;
-        if (recovery_bip39_checksum_valid(ids)) {
+        if (task.effective_nvalid || recovery_bip39_checksum_valid(ids)) {
             if (!recovery_direct_append_candidate_i32(ctx, task, ids, err)) {
                 return false;
             }
@@ -2631,7 +2674,7 @@ static bool recovery_emit_task_candidates_cpu(RecoveryGpuDirectContext& ctx, con
             }
 
             ++tested;
-            if (recovery_bip39_checksum_valid(ids)) {
+            if (task.effective_nvalid || recovery_bip39_checksum_valid(ids)) {
                 if (!recovery_direct_append_candidate_i32(ctx, task, ids, err)) {
                     return false;
                 }
@@ -2646,8 +2689,8 @@ static bool recovery_emit_task_candidates_cpu(RecoveryGpuDirectContext& ctx, con
         }
 
         const int pos = task.missing_positions[depth];
-        for (int w = 0; w < 2048; ++w) {
-            ids[static_cast<size_t>(pos)] = w;
+        for (size_t w = 0; w < task.word_options_count; ++w) {
+            ids[static_cast<size_t>(pos)] = static_cast<int>(recovery_word_option_id(task, w));
             if (!dfs(depth + 1u)) {
                 return false;
             }
@@ -2690,7 +2733,7 @@ static bool recovery_emit_task_candidates_gpu(RecoveryGpuDirectContext& ctx, con
             return true;
         }
         tested = 1;
-        if (recovery_bip39_checksum_valid(ids)) {
+        if (task.effective_nvalid || recovery_bip39_checksum_valid(ids)) {
             if (!recovery_direct_append_candidate_i32(ctx, task, ids, err)) {
                 return false;
             }
@@ -2700,14 +2743,10 @@ static bool recovery_emit_task_candidates_gpu(RecoveryGpuDirectContext& ctx, con
         return true;
     }
 
-    const int low_missing_count = (missing_count > 5) ? 5 : missing_count;
-    const int high_missing_count = missing_count - low_missing_count;
-
+    const uint32_t word_options_count = static_cast<uint32_t>(task.word_options_count);
     uint64_t low_space_candidates = 0ull;
-    if (!recovery_pow_2048_u64(low_missing_count, low_space_candidates)) {
-        err = "internal error: invalid GPU wildcard split";
-        return false;
-    }
+    const int low_missing_count = recovery_pick_low_missing_count(missing_count, word_options_count, low_space_candidates);
+    const int high_missing_count = missing_count - low_missing_count;
 
     uint64_t partition_low_start = 0ull;
     uint64_t partition_low_count = low_space_candidates;
@@ -2741,6 +2780,7 @@ static bool recovery_emit_task_candidates_gpu(RecoveryGpuDirectContext& ctx, con
 
     uint16_t* d_base_ids = nullptr;
     int* d_missing_positions = nullptr;
+    uint16_t* d_word_options = nullptr;
     uint16_t* d_out_ids = nullptr;
     uint32_t* d_out_count = nullptr;
     std::vector<uint16_t> host_out_ids;
@@ -2763,7 +2803,7 @@ static bool recovery_emit_task_candidates_gpu(RecoveryGpuDirectContext& ctx, con
     // Keep checksum-valid batches comfortably below the compaction buffer limit.
     // The old 4M boundary sits exactly on the 1/16 checksum expectation and proved unstable
     // during long staged multi-GPU recovery runs.
-    const uint64_t hard_batch = static_cast<uint64_t>(out_capacity) << 3; // 2M candidates per launch.
+    const uint64_t hard_batch = task.effective_nvalid ? static_cast<uint64_t>(out_capacity) : (static_cast<uint64_t>(out_capacity) << 3);
     pending.reserve(128u);
 
     auto run_low_space = [&](const uint64_t range_start, const uint64_t range_count) -> bool {
@@ -2804,6 +2844,9 @@ static bool recovery_emit_task_candidates_gpu(RecoveryGpuDirectContext& ctx, con
                 words_count_local,
                 d_missing_positions,
                 low_missing_count,
+                d_word_options,
+                word_options_count,
+                task.effective_nvalid,
                 range.start,
                 range.count,
                 d_out_ids,
@@ -2881,6 +2924,13 @@ static bool recovery_emit_task_candidates_gpu(RecoveryGpuDirectContext& ctx, con
     st = cudaMalloc(reinterpret_cast<void**>(&d_out_count), sizeof(uint32_t));
     if (st != cudaSuccess) { err = "cudaMalloc d_out_count failed"; goto cleanup; }
 
+    if (!task.wordlist->word_options.empty()) {
+        st = cudaMalloc(reinterpret_cast<void**>(&d_word_options), task.wordlist->word_options.size() * sizeof(uint16_t));
+        if (st != cudaSuccess) { err = "cudaMalloc d_word_options failed"; goto cleanup; }
+        st = cudaMemcpy(d_word_options, task.wordlist->word_options.data(), task.wordlist->word_options.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        if (st != cudaSuccess) { err = "cudaMemcpy d_word_options failed"; goto cleanup; }
+    }
+
     st = cudaMemcpy(d_missing_positions, low_missing_positions.data(), low_missing_positions.size() * sizeof(int), cudaMemcpyHostToDevice);
     if (st != cudaSuccess) { err = "cudaMemcpy d_missing_positions failed"; goto cleanup; }
     host_out_ids.resize(out_ids_count);
@@ -2895,7 +2945,7 @@ static bool recovery_emit_task_candidates_gpu(RecoveryGpuDirectContext& ctx, con
         for (;;) {
             for (int i = 0; i < high_missing_count; ++i) {
                 const int pos = high_missing_positions[static_cast<size_t>(i)];
-                active_base_ids[static_cast<size_t>(pos)] = high_digits[static_cast<size_t>(i)];
+                active_base_ids[static_cast<size_t>(pos)] = recovery_word_option_id(task, high_digits[static_cast<size_t>(i)]);
             }
 
             if (!recovery_partition_skip_high_combo(high_combo_index)) {
@@ -2907,9 +2957,9 @@ static bool recovery_emit_task_candidates_gpu(RecoveryGpuDirectContext& ctx, con
 
             int carry_idx = 0;
             for (; carry_idx < high_missing_count; ++carry_idx) {
-                const uint16_t next = static_cast<uint16_t>(high_digits[static_cast<size_t>(carry_idx)] + 1u);
-                if (next < 2048u) {
-                    high_digits[static_cast<size_t>(carry_idx)] = next;
+                const uint32_t next = static_cast<uint32_t>(high_digits[static_cast<size_t>(carry_idx)]) + 1u;
+                if (next < word_options_count) {
+                    high_digits[static_cast<size_t>(carry_idx)] = static_cast<uint16_t>(next);
                     break;
                 }
                 high_digits[static_cast<size_t>(carry_idx)] = 0u;
@@ -2924,6 +2974,7 @@ static bool recovery_emit_task_candidates_gpu(RecoveryGpuDirectContext& ctx, con
 cleanup:
     if (d_base_ids) cudaFree(d_base_ids);
     if (d_missing_positions) cudaFree(d_missing_positions);
+    if (d_word_options) cudaFree(d_word_options);
     if (d_out_ids) cudaFree(d_out_ids);
     if (d_out_count) cudaFree(d_out_count);
 
@@ -2952,14 +3003,10 @@ static bool recovery_emit_task_candidates_fused_gpu(RecoveryGpuDirectContext& ct
         return false;
     }
 
-    const int low_missing_count = (missing_count > 5) ? 5 : missing_count;
-    const int high_missing_count = missing_count - low_missing_count;
-
+    const uint32_t word_options_count = static_cast<uint32_t>(task.word_options_count);
     uint64_t low_space_candidates = 0ull;
-    if (!recovery_pow_2048_u64(low_missing_count, low_space_candidates)) {
-        err = "internal error: invalid wildcard split";
-        return false;
-    }
+    const int low_missing_count = recovery_pick_low_missing_count(missing_count, word_options_count, low_space_candidates);
+    const int high_missing_count = missing_count - low_missing_count;
 
     uint64_t partition_low_start = 0ull;
     uint64_t partition_low_count = low_space_candidates;
@@ -2970,8 +3017,8 @@ static bool recovery_emit_task_candidates_fused_gpu(RecoveryGpuDirectContext& ct
     std::vector<uint16_t> base_ids(static_cast<size_t>(words_count_local), 0u);
     for (int i = 0; i < words_count_local; ++i) {
         const int id = task.ids[static_cast<size_t>(i)];
-        if (id >= 2048) {
-            err = "invalid recovery base word id (>=2048)";
+        if (id > static_cast<int>(std::numeric_limits<uint16_t>::max())) {
+            err = "invalid recovery base word id (>65535)";
             return false;
         }
         base_ids[static_cast<size_t>(i)] = static_cast<uint16_t>(id < 0 ? 0 : id);
@@ -2998,6 +3045,7 @@ static bool recovery_emit_task_candidates_fused_gpu(RecoveryGpuDirectContext& ct
 
     uint16_t* d_base_ids = nullptr;
     int* d_missing_positions = nullptr;
+    uint16_t* d_word_options = nullptr;
     uint16_t* d_out_ids = nullptr;
     uint32_t* d_out_count = nullptr;
     uint32_t* d_master_words = nullptr;
@@ -3021,7 +3069,7 @@ static bool recovery_emit_task_candidates_fused_gpu(RecoveryGpuDirectContext& ct
     // Keep checksum-valid batches comfortably below the compaction buffer limit.
     // The old 4M boundary sits exactly on the 1/16 checksum expectation and proved unstable
     // during long staged multi-GPU recovery runs.
-    const uint64_t hard_batch = static_cast<uint64_t>(out_capacity) << 3; // 2M candidates per launch.
+    const uint64_t hard_batch = task.effective_nvalid ? static_cast<uint64_t>(out_capacity) : (static_cast<uint64_t>(out_capacity) << 3);
     pending.reserve(128u);
 
     auto run_low_space = [&](const uint64_t range_start, const uint64_t range_count) -> bool {
@@ -3062,6 +3110,9 @@ static bool recovery_emit_task_candidates_fused_gpu(RecoveryGpuDirectContext& ct
                 words_count_local,
                 d_missing_positions,
                 low_missing_count,
+                d_word_options,
+                word_options_count,
+                task.effective_nvalid,
                 range.start,
                 range.count,
                 d_out_ids,
@@ -3179,6 +3230,13 @@ static bool recovery_emit_task_candidates_fused_gpu(RecoveryGpuDirectContext& ct
     st = cudaMalloc(reinterpret_cast<void**>(&d_master_words), master_words_count * sizeof(uint32_t));
     if (st != cudaSuccess) { err = "failed to allocate recovery workspace"; goto cleanup_fused; }
 
+    if (!task.wordlist->word_options.empty()) {
+        st = cudaMalloc(reinterpret_cast<void**>(&d_word_options), task.wordlist->word_options.size() * sizeof(uint16_t));
+        if (st != cudaSuccess) { err = "failed to allocate recovery word options"; goto cleanup_fused; }
+        st = cudaMemcpy(d_word_options, task.wordlist->word_options.data(), task.wordlist->word_options.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        if (st != cudaSuccess) { err = "failed to upload recovery word options"; goto cleanup_fused; }
+    }
+
     if (high_missing_count == 0) {
         if (!run_low_space(partition_low_start, partition_low_count)) {
             goto cleanup_fused;
@@ -3189,7 +3247,7 @@ static bool recovery_emit_task_candidates_fused_gpu(RecoveryGpuDirectContext& ct
         for (;;) {
             for (int i = 0; i < high_missing_count; ++i) {
                 const int pos = high_missing_positions[static_cast<size_t>(i)];
-                active_base_ids[static_cast<size_t>(pos)] = high_digits[static_cast<size_t>(i)];
+                active_base_ids[static_cast<size_t>(pos)] = recovery_word_option_id(task, high_digits[static_cast<size_t>(i)]);
             }
 
             if (!recovery_partition_skip_high_combo(high_combo_index)) {
@@ -3201,9 +3259,9 @@ static bool recovery_emit_task_candidates_fused_gpu(RecoveryGpuDirectContext& ct
 
             int carry_idx = 0;
             for (; carry_idx < high_missing_count; ++carry_idx) {
-                const uint16_t next = static_cast<uint16_t>(high_digits[static_cast<size_t>(carry_idx)] + 1u);
-                if (next < 2048u) {
-                    high_digits[static_cast<size_t>(carry_idx)] = next;
+                const uint32_t next = static_cast<uint32_t>(high_digits[static_cast<size_t>(carry_idx)]) + 1u;
+                if (next < word_options_count) {
+                    high_digits[static_cast<size_t>(carry_idx)] = static_cast<uint16_t>(next);
                     break;
                 }
                 high_digits[static_cast<size_t>(carry_idx)] = 0u;
@@ -3217,6 +3275,7 @@ static bool recovery_emit_task_candidates_fused_gpu(RecoveryGpuDirectContext& ct
 cleanup_fused:
     if (d_base_ids) cudaFree(d_base_ids);
     if (d_missing_positions) cudaFree(d_missing_positions);
+    if (d_word_options) cudaFree(d_word_options);
     if (d_out_ids) cudaFree(d_out_ids);
     if (d_out_count) cudaFree(d_out_count);
     if (d_master_words) cudaFree(d_master_words);
@@ -3267,15 +3326,6 @@ static bool recovery_emit_task_candidates(RecoveryGpuDirectContext& ctx, const R
 static bool recovery_load_wordlists(std::vector<RecoveryWordlist>& out, std::string& err) {
     out.clear();
 
-    if (!recoveryForcedWordlist.empty()) {
-        RecoveryWordlist external_wl;
-        if (!recovery_add_file_wordlist(recoveryForcedWordlist, external_wl, err)) {
-            return false;
-        }
-        out.emplace_back(std::move(external_wl));
-        return true;
-    }
-
     std::vector<RecoveryWordlist> all_lists;
     all_lists.reserve(kRecoveryEmbeddedWordlistsCount);
 
@@ -3300,6 +3350,56 @@ static bool recovery_load_wordlists(std::vector<RecoveryWordlist>& out, std::str
         if (id_norm.find("bip39-") != std::string::npos || file_norm.find("bip39-") != std::string::npos) {
             bip39_lists.emplace_back(wl);
         }
+    }
+
+    if (!recoveryForcedWordlist.empty()) {
+        RecoveryWordlist external_wl;
+        if (!recovery_add_file_wordlist(recoveryForcedWordlist, external_wl, err)) {
+            return false;
+        }
+
+        if (external_wl.words.size() != 2048u) {
+            const RecoveryWordlist* matched_wordlist = nullptr;
+            std::vector<uint16_t> matched_options;
+            size_t matching_wordlists = 0u;
+
+            for (const RecoveryWordlist& candidate : bip39_lists) {
+                std::vector<uint16_t> candidate_options;
+                candidate_options.reserve(external_wl.words_norm.size());
+                bool matches = true;
+                for (const std::string& word_norm : external_wl.words_norm) {
+                    const auto it = candidate.id_by_norm.find(word_norm);
+                    if (it == candidate.id_by_norm.end() || it->second < 0 || it->second > 2047) {
+                        matches = false;
+                        break;
+                    }
+                    candidate_options.emplace_back(static_cast<uint16_t>(it->second));
+                }
+                if (matches) {
+                    ++matching_wordlists;
+                    matched_wordlist = &candidate;
+                    matched_options.swap(candidate_options);
+                }
+            }
+
+            if (matching_wordlists == 1u && matched_wordlist != nullptr) {
+                RecoveryWordlist subset = *matched_wordlist;
+                subset.path = external_wl.path;
+                subset.file_name = external_wl.file_name;
+                subset.name = external_wl.file_name + " (subset of " + matched_wordlist->name + ")";
+                subset.word_options.swap(matched_options);
+                subset.source_word_count = external_wl.words.size();
+                subset.standard_subset = true;
+                subset.auto_nvalid = false;
+                out.emplace_back(std::move(subset));
+                return true;
+            }
+
+            external_wl.auto_nvalid = true;
+        }
+
+        out.emplace_back(std::move(external_wl));
+        return true;
     }
 
     if (!bip39_lists.empty()) {
@@ -3334,13 +3434,22 @@ static void recovery_log_prepared_task(const RecoveryPreparedTask& task, const b
 
     const size_t n_words = task.ids.size();
     const size_t missing = task.missing_positions.size();
-    const long double combos = std::pow(2048.0L, static_cast<long double>(missing));
-    const long double expected_valid = combos / std::pow(2.0L, static_cast<long double>(n_words / 3u));
+    const long double combos = std::pow(static_cast<long double>(task.word_options_count), static_cast<long double>(missing));
+    const long double expected_valid = task.effective_nvalid ? combos : (combos / std::pow(2.0L, static_cast<long double>(n_words / 3u)));
 
-    printf("[!] Recovery task: words=%llu missing=%llu dict=%s [!]\n",
+    if (task.wordlist->auto_nvalid) {
+        printf("[!] External wordlist is not an unambiguous BIP39 subset; enabling -nvalid automatically. [!]\n");
+    }
+    else if (task.wordlist_source_is_standard_subset) {
+        printf("[!] External wordlist recognized as an unambiguous BIP39 subset; checksum filtering remains enabled. [!]\n");
+    }
+
+    printf("[!] Recovery task: words=%llu missing=%llu options=%llu dict=%s checksum=%s [!]\n",
         static_cast<unsigned long long>(n_words),
         static_cast<unsigned long long>(missing),
-        task.wordlist->name.c_str());
+        static_cast<unsigned long long>(task.word_options_count),
+        task.wordlist->name.c_str(),
+        task.effective_nvalid ? "disabled" : "enabled");
     printf("[!] Phrase: %s\n", task.normalized_phrase.c_str());
     printf("[!] Candidates to test: ~%s | expected checksum-valid: ~%s\n",
         recovery_format_scientific(combos).c_str(),
@@ -4005,6 +4114,11 @@ bool readArgs(int argc, char** argv) {
                 return false;
             }
             recoveryForcedWordlist = argv[a];
+            continue;
+        }
+
+        if (strcmp(arg, "-nvalid") == 0) {
+            recoveryIncludeInvalid = true;
             continue;
         }
 

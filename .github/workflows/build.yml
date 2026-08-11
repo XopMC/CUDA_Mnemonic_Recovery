@@ -17,8 +17,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - label: sm_61-dlto
+            archs: "61"
+            dlto: "ON"
+          - label: sm_75-dlto
+            archs: "75"
+            dlto: "ON"
+          - label: sm_86-dlto
+            archs: "86"
+            dlto: "ON"
           - label: sm_89-dlto
             archs: "89"
+            dlto: "ON"
+          - label: sm_120-dlto
+            archs: "120"
             dlto: "ON"
           - label: universal-sm_86-sm_120
             archs: "86;89;120"
@@ -41,6 +53,9 @@ jobs:
       - name: Build
         run: cmake --build --preset linux-release
 
+      - name: Check public help
+        run: out/build/linux-release/bin/CUDA_Mnemonic_Recovery -help
+
   windows:
     name: Windows ${{ matrix.label }}
     runs-on: windows-2022
@@ -48,8 +63,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - label: sm_61
+            archs: "61"
+            dlto: "OFF"
+          - label: sm_75
+            archs: "75"
+            dlto: "OFF"
+          - label: sm_86
+            archs: "86"
+            dlto: "OFF"
           - label: sm_89
             archs: "89"
+            dlto: "OFF"
+          - label: sm_120
+            archs: "120"
             dlto: "OFF"
           - label: universal-sm_86-sm_120
             archs: "86;89;120"
@@ -77,3 +104,10 @@ jobs:
       - name: Build
         shell: powershell
         run: cmake --build --preset windows-release --config Release -- /m:1
+
+      - name: Check public help
+        shell: powershell
+        run: |
+          $binary = Get-ChildItem -Recurse (Join-Path $pwd "out/build/windows-release/bin") -Filter "CUDA_Mnemonic_Recovery.exe" | Select-Object -First 1
+          if (-not $binary) { throw "Built executable not found." }
+          & $binary.FullName -help
