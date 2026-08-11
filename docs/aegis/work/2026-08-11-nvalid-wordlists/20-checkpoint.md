@@ -13,3 +13,9 @@
 - Compatibility: legacy 2048 strict path retained and verified at `tested=2048 checksum-valid=128`.
 - New owners/fallbacks: none.
 - Decision: continue to local commit.
+
+## Release workflow recovery (2026-08-12)
+
+- The first v1.1.0 release run compiled Linux targets but failed during packaging because container jobs used /bin/sh, which rejects set -o pipefail.
+- The workflow now selects Bash explicitly for Linux packaging.
+- Manual dispatch accepts release_tag, allowing assets to be rebuilt from fixed main and attached to the existing immutable v1.1.0 tag.

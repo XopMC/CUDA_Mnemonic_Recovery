@@ -13,3 +13,11 @@
 - `git diff --check`: exit 0 before final closeout.
 
 Uncovered scope: Linux and the complete GitHub SM matrix require CI runners; release publication requires push, PR merge, and tag authorization.
+
+## Release workflow failure and fix (2026-08-12)
+
+- Failed run: 31528663594.
+- Observed error: /bin/sh: set: Illegal option -o pipefail.
+- Root cause: the Linux Package step ran under the container default /bin/sh despite using Bash-only pipefail.
+- Fix: set shell: bash, derive archive names from RELEASE_VERSION, and permit workflow_dispatch with release_tag.
+- Recovery command: gh workflow run release-bundles.yml --ref main -f release_tag=v1.1.0.
