@@ -2,6 +2,11 @@ name: release-build-bundles
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing v* tag to build and publish (optional)."
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -11,6 +16,7 @@ permissions:
 
 env:
   CUDA_VERSION: "12.8.0"
+  RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   build-linux:
@@ -71,6 +77,7 @@ jobs:
         run: cmake --build --preset linux-release
 
       - name: Package
+        shell: bash
         run: |
           set -euo pipefail
           PKG_DIR="out/pkg/linux/${{ matrix.label }}"
@@ -90,7 +97,7 @@ jobs:
           Driver requirement: a compatible NVIDIA driver is required on the target machine.
           Universal note: the universal sm_86-sm_120 bundle covers RTX 30xx through RTX 50xx. RTX 20xx uses the dedicated sm_75 build.
           EOF
-          ARCHIVE="CUDA_Mnemonic_Recovery-${GITHUB_REF_NAME}-linux-${{ matrix.label }}.tar.gz"
+          ARCHIVE="CUDA_Mnemonic_Recovery-${RELEASE_VERSION}-linux-${{ matrix.label }}.tar.gz"
           tar -C "$PKG_DIR" -czf "$RELEASE_DIR/$ARCHIVE" .
           sha256sum "$RELEASE_DIR/$ARCHIVE" > "$RELEASE_DIR/$ARCHIVE.sha256"
 
@@ -184,7 +191,7 @@ jobs:
           Driver requirement: a compatible NVIDIA driver is required on the target machine.
           Universal note: the universal sm_86-sm_120 bundle covers RTX 30xx through RTX 50xx. RTX 20xx uses the dedicated sm_75 build.
           "@ | Set-Content (Join-Path $pkgDir "BUILD.txt")
-          $archive = "CUDA_Mnemonic_Recovery-$env:GITHUB_REF_NAME-windows-${{ matrix.label }}.zip"
+          $archive = "CUDA_Mnemonic_Recovery-$env:RELEASE_VERSION-windows-${{ matrix.label }}.zip"
           $archivePath = Join-Path $releaseDir $archive
           Compress-Archive -Path (Join-Path $pkgDir "*") -DestinationPath $archivePath -Force
           $hash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
@@ -219,6 +226,7 @@ jobs:
           merge-multiple: true
 
       - name: Create aggregate checksums
+        shell: bash
         run: |
           set -euo pipefail
           cd dist
@@ -231,7 +239,8 @@ jobs:
           path: dist/*
 
       - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: dist/*
