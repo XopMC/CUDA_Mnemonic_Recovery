@@ -54,7 +54,7 @@ File-based recovery inputs are validated in streaming mode. The release path no 
 | `-d_type 3` | mixed derivation mode with non-default derivation marker in output | automated |
 | `-d_type 4` | experimental `ed25519-bip32` path | automated |
 | Multi-GPU parity | same fixture reaches the same `Found` count on single-GPU and multi-GPU runs | automated when `MultiDevice` is provided |
-| External `-wordlist FILE` | external 2048-word BIP39 override | manual |
+| External `-wordlist FILE` | 128-word BIP39 subset, custom auto-`-nvalid`, explicit `-nvalid`, and legacy 2048-word metrics | automated |
 | Bloom / XOR / `-xb` / `-xx` | filter-backed validation with external filter assets | manual |
 | Phrase lengths `3..48` | broader acceptance sweep for all supported multiples of `3` | manual |
 
@@ -62,6 +62,7 @@ File-based recovery inputs are validated in streaming mode. The release path no 
 
 - `-d_type 4` is intentionally treated as experimental/test-only coverage. It is validated separately and is not part of the main production-path claims.
 - The automated scripts focus on deterministic CLI correctness. They do not replace broader field testing on large real recovery jobs.
+- Partial/custom wordlist assertions use the actual option count; only the legacy full dictionary case keeps the fixed `2048/128` expectation.
 
 ---
 
@@ -116,7 +117,7 @@ Validation fixtures лежат в [`examples/validation`](./examples/validation)
 | `-d_type 3` | mixed derivation mode с маркером non-default derivation в output | automated |
 | `-d_type 4` | experimental `ed25519-bip32` path | automated |
 | Multi-GPU parity | один и тот же fixture даёт одинаковый `Found` на single-GPU и multi-GPU | automated, если передан `MultiDevice` |
-| Внешний `-wordlist FILE` | внешний 2048-word BIP39 override | manual |
+| Внешний `-wordlist FILE` | 128-word BIP39 subset, custom auto-`-nvalid`, явный `-nvalid` и прежние метрики 2048-word режима | automated |
 | Bloom / XOR / `-xb` / `-xx` | filter-backed validation с внешними filter-assets | manual |
 | Длины фраз `3..48` | более широкий acceptance-sweep по всем поддерживаемым кратным `3` | manual |
 
@@ -124,3 +125,4 @@ Validation fixtures лежат в [`examples/validation`](./examples/validation)
 
 - `-d_type 4` специально остаётся в отдельном experimental/test-only контуре. Он валидируется отдельно и не входит в основные production-claims.
 - Automated-скрипты сфокусированы на deterministic CLI correctness. Они не заменяют более широкие полевые проверки на длинных реальных recovery-задачах.
+- Для partial/custom wordlist проверки используют фактическое число опций; фиксированное ожидание `2048/128` остаётся только для legacy full-dictionary кейса.

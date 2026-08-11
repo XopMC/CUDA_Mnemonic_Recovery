@@ -27,6 +27,7 @@ template_typo="examples/validation/template-typo.txt"
 derivations_default="examples/derivations/default.txt"
 derivations_secp="examples/validation/derivations-secp.txt"
 derivations_solana="examples/validation/derivations-solana.txt"
+wordlist_english="assets/wordlists/bip39-en.txt"
 
 validation_out_dir="$repo_root/out/validation-run"
 mkdir -p "$validation_out_dir"
@@ -71,7 +72,56 @@ pushd "$repo_root" >/dev/null
 
 help_output="$(run_case "help" -help)"
 require_pattern "help" "$help_output" '-d_type 1\|2\|3\|4'
+require_pattern "help" "$help_output" '-nvalid'
 echo "[ok] help"
+
+wordlist_en_128="$validation_out_dir/wordlist-en-128.txt"
+wordlist_custom_3="$validation_out_dir/wordlist-custom-3.txt"
+wordlist_mixed_3="$validation_out_dir/wordlist-mixed-3.txt"
+wordlist_custom_2049="$validation_out_dir/wordlist-custom-2049.txt"
+head -n 128 "$wordlist_english" > "$wordlist_en_128"
+printf '%s\n' alpha custombeta customgamma > "$wordlist_custom_3"
+printf '%s\n' abandon ability customword > "$wordlist_mixed_3"
+awk 'BEGIN { for (i = 0; i <= 2048; ++i) printf "customword%04d\n", i }' > "$wordlist_custom_2049"
+
+subset_output="$(run_case "standard subset checksum" \
+  -device "$device" -recovery "$phrase_one_missing" \
+  -wordlist "$wordlist_en_128" -d "$derivations_default" \
+  -c c -hash "$hash_compressed" -pbkdf 1 -silent)"
+require_pattern "standard subset checksum" "$subset_output" 'recognized as an unambiguous BIP39 subset'
+require_pattern "standard subset checksum" "$subset_output" 'tested=128 checksum-valid=8'
+echo "[ok] standard subset checksum"
+
+custom_output="$(run_case "custom wordlist auto nvalid" \
+  -device "$device" -recovery "alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha *" \
+  -wordlist "$wordlist_custom_3" -d "$derivations_default" \
+  -c c -hash "$hash_compressed" -pbkdf 1 -silent)"
+require_pattern "custom wordlist auto nvalid" "$custom_output" 'enabling -nvalid automatically'
+require_pattern "custom wordlist auto nvalid" "$custom_output" 'tested=3 checksum-valid=3'
+echo "[ok] custom wordlist auto nvalid"
+
+mixed_wordlist_output="$(run_case "mixed wordlist auto nvalid" \
+  -device "$device" -recovery "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon *" \
+  -wordlist "$wordlist_mixed_3" -d "$derivations_default" \
+  -c c -hash "$hash_compressed" -pbkdf 1 -silent)"
+require_pattern "mixed wordlist auto nvalid" "$mixed_wordlist_output" 'enabling -nvalid automatically'
+require_pattern "mixed wordlist auto nvalid" "$mixed_wordlist_output" 'tested=3 checksum-valid=3'
+echo "[ok] mixed wordlist auto nvalid"
+
+explicit_nvalid_output="$(run_case "explicit nvalid" \
+  -device "$device" -recovery "$phrase_one_missing" \
+  -wordlist "$wordlist_english" -nvalid -d "$derivations_default" \
+  -c c -hash "$hash_compressed" -pbkdf 1 -silent)"
+require_pattern "explicit nvalid" "$explicit_nvalid_output" 'tested=2048 checksum-valid=2048'
+echo "[ok] explicit nvalid"
+
+custom_2049_output="$(run_case "custom wordlist above 2048" \
+  -device "$device" -recovery "customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 customword0000 *" \
+  -wordlist "$wordlist_custom_2049" -d "$derivations_default" \
+  -c c -hash "$hash_compressed" -pbkdf 1 -silent)"
+require_pattern "custom wordlist above 2048" "$custom_2049_output" 'options=2049'
+require_pattern "custom wordlist above 2048" "$custom_2049_output" 'tested=2049 checksum-valid=2049'
+echo "[ok] custom wordlist above 2048"
 
 inline_output="$(run_case "inline exact hash" \
   -device "$device" \

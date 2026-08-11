@@ -74,7 +74,9 @@ jobs:
         run: |
           set -euo pipefail
           PKG_DIR="out/pkg/linux/${{ matrix.label }}"
+          RELEASE_DIR="out/release"
           mkdir -p "$PKG_DIR"
+          mkdir -p "$RELEASE_DIR"
           cp out/build/linux-release/bin/CUDA_Mnemonic_Recovery "$PKG_DIR/CUDA_Mnemonic_Recovery"
           cp README.md LICENSE.txt THIRD_PARTY_NOTICES.md RESPONSIBLE_USE.md SECURITY.md "$PKG_DIR/"
           cp -R examples "$PKG_DIR/examples"
@@ -88,12 +90,15 @@ jobs:
           Driver requirement: a compatible NVIDIA driver is required on the target machine.
           Universal note: the universal sm_86-sm_120 bundle covers RTX 30xx through RTX 50xx. RTX 20xx uses the dedicated sm_75 build.
           EOF
+          ARCHIVE="CUDA_Mnemonic_Recovery-${GITHUB_REF_NAME}-linux-${{ matrix.label }}.tar.gz"
+          tar -C "$PKG_DIR" -czf "$RELEASE_DIR/$ARCHIVE" .
+          sha256sum "$RELEASE_DIR/$ARCHIVE" > "$RELEASE_DIR/$ARCHIVE.sha256"
 
       - name: Upload packaged build
         uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.label }}
-          path: out/pkg/linux/${{ matrix.label }}
+          path: out/release/*
           if-no-files-found: error
 
   build-windows:
@@ -161,7 +166,9 @@ jobs:
         shell: powershell
         run: |
           $pkgDir = Join-Path $pwd "out/pkg/windows/${{ matrix.label }}"
+          $releaseDir = Join-Path $pwd "out/release"
           New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           $binary = Get-ChildItem -Recurse (Join-Path $pwd "out/build/windows-release/bin") -Filter "CUDA_Mnemonic_Recovery.exe" | Select-Object -First 1
           if (-not $binary) { throw "Built executable not found." }
           Copy-Item $binary.FullName (Join-Path $pkgDir "CUDA_Mnemonic_Recovery.exe") -Force
@@ -177,60 +184,54 @@ jobs:
           Driver requirement: a compatible NVIDIA driver is required on the target machine.
           Universal note: the universal sm_86-sm_120 bundle covers RTX 30xx through RTX 50xx. RTX 20xx uses the dedicated sm_75 build.
           "@ | Set-Content (Join-Path $pkgDir "BUILD.txt")
+          $archive = "CUDA_Mnemonic_Recovery-$env:GITHUB_REF_NAME-windows-${{ matrix.label }}.zip"
+          $archivePath = Join-Path $releaseDir $archive
+          Compress-Archive -Path (Join-Path $pkgDir "*") -DestinationPath $archivePath -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content (Join-Path $releaseDir "$archive.sha256")
 
       - name: Upload packaged build
         uses: actions/upload-artifact@v4
         with:
           name: windows-${{ matrix.label }}
-          path: out/pkg/windows/${{ matrix.label }}
+          path: out/release/*
           if-no-files-found: error
 
   bundle:
-    name: Bundle release archives
+    name: Assemble release assets
     runs-on: ubuntu-latest
     needs:
       - build-linux
       - build-windows
     steps:
-      - name: Download Linux builds
+      - name: Download Linux archives
         uses: actions/download-artifact@v4
         with:
           pattern: linux-*
-          path: dist/linux
-          merge-multiple: false
+          path: dist
+          merge-multiple: true
 
-      - name: Download Windows builds
+      - name: Download Windows archives
         uses: actions/download-artifact@v4
         with:
           pattern: windows-*
-          path: dist/windows
-          merge-multiple: false
+          path: dist
+          merge-multiple: true
 
-      - name: Create archives
+      - name: Create aggregate checksums
         run: |
           set -euo pipefail
           cd dist
-          zip -rq ../CUDA_Mnemonic_Recovery-windows-builds.zip windows
-          tar -czf ../CUDA_Mnemonic_Recovery-linux-builds.tar.gz linux
-          sha256sum ../CUDA_Mnemonic_Recovery-windows-builds.zip > ../CUDA_Mnemonic_Recovery-windows-builds.zip.sha256
-          sha256sum ../CUDA_Mnemonic_Recovery-linux-builds.tar.gz > ../CUDA_Mnemonic_Recovery-linux-builds.tar.gz.sha256
+          sha256sum *.zip *.tar.gz > SHA256SUMS.txt
 
       - name: Upload final archives
         uses: actions/upload-artifact@v4
         with:
           name: release-bundles
-          path: |
-            CUDA_Mnemonic_Recovery-windows-builds.zip
-            CUDA_Mnemonic_Recovery-windows-builds.zip.sha256
-            CUDA_Mnemonic_Recovery-linux-builds.tar.gz
-            CUDA_Mnemonic_Recovery-linux-builds.tar.gz.sha256
+          path: dist/*
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            CUDA_Mnemonic_Recovery-windows-builds.zip
-            CUDA_Mnemonic_Recovery-windows-builds.zip.sha256
-            CUDA_Mnemonic_Recovery-linux-builds.tar.gz
-            CUDA_Mnemonic_Recovery-linux-builds.tar.gz.sha256
+          files: dist/*

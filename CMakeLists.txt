@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(CUDA_Mnemonic_Recovery VERSION 1.0.0 LANGUAGES C CXX CUDA)
+project(CUDA_Mnemonic_Recovery VERSION 1.1.0 LANGUAGES C CXX CUDA)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     message(FATAL_ERROR
